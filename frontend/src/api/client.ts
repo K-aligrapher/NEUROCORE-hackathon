@@ -9,45 +9,7 @@ export const apiClient = axios.create({
   },
 })
 
-apiClient.interceptors.request.use((config) => {
-  const token = localStorage.getItem('access_token')
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`
-  }
-  return config
-})
-
-apiClient.interceptors.response.use(
-  (response) => response,
-  async (error) => {
-    if (error.response?.status === 401) {
-      localStorage.removeItem('access_token')
-      window.location.href = '/auth'
-    }
-    return Promise.reject(error)
-  }
-)
-
-export interface User {
-  id: string
-  email: string
-  name: string
-  role: string
-  institution?: string
-  country?: string
-  is_verified: boolean
-}
-
-export interface Token {
-  access_token: string
-  refresh_token: string
-  token_type: string
-  expires_in: number
-}
-
-export interface JobStatus {
-  status: 'queued' | 'preprocessing' | 'segmenting' | 'enhancing' | 'classifying' | 'completed' | 'failed'
-}
+// No auth interceptors needed
 
 export interface CellStatistics {
   total_detected: number
@@ -71,7 +33,6 @@ export interface AnalysisResult {
   status: string
   created_at: string
   completed_at?: string
-  processing_time_ms?: number
   device?: string
   timing?: {
     detection: number
@@ -79,117 +40,27 @@ export interface AnalysisResult {
     classify: number
     total: number
   }
-  image?: {
-    original_url?: string
-    annotated_url?: string
-    thumbnail_url?: string
-  }
-  cell_statistics?: {
-    total_detected: number
-    rbc_count: number
-    wbc_count: number
-    platelet_count: number
-    rejected_count: number
-  }
-  results?: {
-    malaria: DiseaseResult
-    thalassemia: DiseaseResult
-  }
-  quality_flags: string[]
-  overall_recommendation?: string
-  disclaimer?: string
-  error_message?: string
-  model_versions?: Record<string, string>
-}
-  image?: {
-    original_url?: string
-    annotated_url?: string
-    thumbnail_url?: string
-  }
-  cell_statistics?: {
-    total_detected: number
-    rbc_count: number
-    wbc_count: number
-    platelet_count: number
-    rejected_count: number
-  }
-  results?: {
-    malaria: DiseaseResult
-    sickle_cell: DiseaseResult
-    elliptocytosis: DiseaseResult  // Changed from thalassemia
-  }
-  quality_flags: string[]
-  overall_recommendation?: string
-  disclaimer?: string
-  error_message?: string
-  model_versions?: Record<string, string>
-}
   cell_statistics?: CellStatistics
   results?: {
     malaria: DiseaseResult
-    sickle_cell: DiseaseResult
     thalassemia: DiseaseResult
   }
   quality_flags: string[]
-  overall_recommendation?: string
   disclaimer?: string
+  error_message?: string
   model_versions?: Record<string, string>
 }
 
-export interface HistoryItem {
-  job_id: string
-  status: string
-  created_at: string
-  completed_at?: string
-  patient_id?: string
-  disease_results: string[]
-  processing_time_ms?: number
-}
-
-export const authApi = {
-  login: async (email: string, password: string) => {
-    const response = await apiClient.post<Token>('/auth/login', { email, password })
-    return response.data
-  },
-  
-  register: async (userData: {
-    email: string
-    password: string
-    name: string
-    role?: string
-    institution?: string
-    country?: string
-  }) => {
-    const response = await apiClient.post<User>('/auth/register', userData)
-    return response.data
-  },
-}
-
 export const analysisApi = {
-  upload: async (file: File, patientId?: string, notes?: string) => {
+  upload: async (file: File, patientId?: string, notes?: string): Promise<AnalysisResult> => {
     const formData = new FormData()
     formData.append('image', file)
     if (patientId) formData.append('patient_id', patientId)
     if (notes) formData.append('notes', notes)
-    
-    const response = await apiClient.post<{ job_id: string; status: string }>('/analysis/upload', formData, {
+
+    const response = await apiClient.post<AnalysisResult>('/analysis/upload', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
-    return response.data
-  },
-  
-  getResult: async (jobId: string): Promise<AnalysisResult> => {
-    const response = await apiClient.get<AnalysisResult>(`/analysis/${jobId}`)
-    return response.data
-  },
-  
-  getHistory: async (limit = 20): Promise<HistoryItem[]> => {
-    const response = await apiClient.get<HistoryItem[]>('/analysis/history', { params: { limit } })
-    return response.data
-  },
-  
-  delete: async (jobId: string) => {
-    const response = await apiClient.delete(`/analysis/${jobId}`)
     return response.data
   },
 }

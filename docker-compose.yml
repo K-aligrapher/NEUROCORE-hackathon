@@ -1,69 +1,15 @@
 # Docker Compose for LokiVision
-# Blood Smear Analysis & Disease Detection System
+# Blood Smear Analysis & Disease Detection System (Simplified)
 
 version: '3.9'
 
 services:
-  # PostgreSQL Database
-  db:
-    image: postgres:15-alpine
-    environment:
-      POSTGRES_DB: lokivision
-      POSTGRES_USER: lokivision
-      POSTGRES_PASSWORD: lokivision_dev_password_2024
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U lokivision"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-    ports:
-      - "5432:5432"
-
-  # Redis
-  redis:
-    image: redis:7-alpine
-    command: redis-server --requirepass lokivision_redis_password_2024
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-    ports:
-      - "6379:6379"
-
-  # MinIO Object Storage
-  minio:
-    image: minio/minio:latest
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: lokivision_minio_password_2024
-    volumes:
-      - minio_data:/data
-    ports:
-      - "9000:9000"
-      - "9001:9001"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 30s
-      timeout: 20s
-      retries: 3
-
   # FastAPI Backend
   api:
     build:
       context: ./backend
       dockerfile: Dockerfile
     environment:
-      DATABASE_URL: postgresql+asyncpg://lokivision:lokivision_dev_password_2024@db:5432/lokivision
-      REDIS_URL: redis://:lokivision_redis_password_2024@redis:6379
-      MINIO_ENDPOINT: minio:9000
-      MINIO_ACCESS_KEY: minioadmin
-      MINIO_SECRET_KEY: lokivision_minio_password_2024
-      MINIO_BUCKET: lokivision-storage
-      JWT_SECRET: lokivision-jwt-secret-min-32-characters-long
-      SECRET_KEY: lokivision-dev-secret-key-change-in-production
       ENVIRONMENT: development
       DEBUG: "true"
     volumes:
@@ -71,13 +17,6 @@ services:
       - models:/app/models:ro
     ports:
       - "8000:8000"
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
   # React Frontend
@@ -104,7 +43,4 @@ services:
       - frontend
 
 volumes:
-  postgres_data:
-  redis_data:
-  minio_data:
   models:

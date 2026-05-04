@@ -1,20 +1,17 @@
 import { useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useDropzone } from 'react-dropzone'
-import { useAppStore } from '../store/useAppStore'
-import { analysisApi } from '../api/client'
+import { analysisApi, AnalysisResult } from '../api/client'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Upload, X, FileImage, AlertCircle } from 'lucide-react'
 
 export default function NewAnalysis() {
   const navigate = useNavigate()
-  const setSelectedJobId = useAppStore((state) => state.setSelectedJobId)
   const [file, setFile] = useState<File | null>(null)
   const [preview, setPreview] = useState<string | null>(null)
-  const [patientId, setPatientId] = useState('')
-  const [notes, setNotes] = useState('')
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState('')
+  const [result, setResult] = useState<AnalysisResult | null>(null)
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
     const f = acceptedFiles[0]
@@ -22,6 +19,7 @@ export default function NewAnalysis() {
       setFile(f)
       setPreview(URL.createObjectURL(f))
       setError('')
+      setResult(null)
     }
   }, [])
 
@@ -36,16 +34,16 @@ export default function NewAnalysis() {
 
   const handleUpload = async () => {
     if (!file) return
-    
+
     setUploading(true)
     setError('')
+    setResult(null)
 
     try {
-      const result = await analysisApi.upload(file, patientId || undefined, notes || undefined)
-      setSelectedJobId(result.job_id)
-      navigate(`/analysis/${result.job_id}/processing`)
+      const analysisResult = await analysisApi.upload(file)
+      setResult(analysisResult)
     } catch (err: any) {
-      setError(err.response?.data?.detail || 'Upload failed. Please try again.')
+      setError(err.response?.data?.detail || 'Analysis failed. Please try again.')
     } finally {
       setUploading(false)
     }
@@ -54,6 +52,7 @@ export default function NewAnalysis() {
   const removeFile = () => {
     setFile(null)
     setPreview(null)
+    setResult(null)
   }
 
   return (
@@ -61,7 +60,7 @@ export default function NewAnalysis() {
       {/* Header */}
       <header className="bg-white border-b border-slate-200">
         <div className="max-w-7xl mx-auto px-6 py-4 flex items-center gap-3">
-          <button onClick={() => navigate('/dashboard')} className="text-slate-500 hover:text-slate-700">
+          <button onClick={() => navigate('/')} className="text-slate-500 hover:text-slate-700">
             ← Back
           </button>
           <div className="w-px h-6 bg-slate-200" />
@@ -88,18 +87,18 @@ export default function NewAnalysis() {
         <div
           {...getRootProps()}
           className={`border-2 border-dashed rounded-2xl p-12 text-center cursor-pointer transition-all ${
-            isDragActive 
-              ? 'border-sky-500 bg-sky-50' 
+            isDragActive
+              ? 'border-sky-500 bg-sky-50'
               : 'border-slate-300 hover:border-sky-400'
           } ${file ? 'border-sky-500 bg-sky-50' : ''}`}
         >
           <input {...getInputProps()} />
-          
+
           {preview ? (
             <div className="relative">
-              <img 
-                src={preview} 
-                alt="Preview" 
+              <img
+                src={preview}
+                alt="Preview"
                 className="max-h-64 mx-auto rounded-xl"
               />
               <button
@@ -124,35 +123,6 @@ export default function NewAnalysis() {
           )}
         </div>
 
-        {/* Metadata */}
-        <div className="mt-6 space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-2">
-              Patient ID (optional)
-            </label>
-            <input
-              type="text"
-              value={patientId}
-              onChange={(e) => setPatientId(e.target.value)}
-              placeholder="PT-2026-00123"
-              className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:border-sky-500 focus:ring-2 focus:ring-sky-500/20 outline-none transition-all"
-            />
-          </div>
-          
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-2">
-              Clinical Notes (optional)
-            </label>
-            <textarea
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              placeholder="Fever for 3 days, returned from endemic region..."
-              rows={3}
-              className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:border-sky-500 focus:ring-2 focus:ring-sky-500/20 outline-none transition-all resize-none"
-            />
-          </div>
-        </div>
-
         {/* Upload Button */}
         <button
           onClick={handleUpload}
@@ -162,7 +132,7 @@ export default function NewAnalysis() {
           {uploading ? (
             <>
               <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-              <span>Uploading...</span>
+              <span>Analyzing...</span>
             </>
           ) : (
             <>
@@ -171,6 +141,116 @@ export default function NewAnalysis() {
             </>
           )}
         </button>
+
+        {/* Results */}
+        {result && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mt-8 space-y-6"
+          >
+            <h2 className="text-xl font-semibold text-slate-800">Analysis Results</h2>
+
+            {/* Timing & Device */}
+            <div className="p-4 bg-white rounded-xl border border-slate-200">
+              <div className="grid grid-cols-2 gap-4 text-sm">
+                <div>
+                  <span className="text-slate-500">Device:</span>{' '}
+                  <span className="font-medium text-slate-700">{result.device || 'cpu'}</span>
+                </div>
+                {result.timing && (
+                  <div>
+                    <span className="text-slate-500">Total Time:</span>{' '}
+                    <span className="font-medium text-slate-700">{result.timing.total.toFixed(2)}s</span>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Cell Statistics */}
+            {result.cell_statistics && (
+              <div className="p-4 bg-white rounded-xl border border-slate-200">
+                <h3 className="text-sm font-semibold text-slate-600 mb-3">Cell Statistics</h3>
+                <div className="grid grid-cols-3 gap-4 text-sm">
+                  <div>
+                    <span className="text-slate-500">Total:</span>{' '}
+                    <span className="font-medium">{result.cell_statistics.total_detected}</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-500">RBC:</span>{' '}
+                    <span className="font-medium">{result.cell_statistics.rbc_count}</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-500">Rejected:</span>{' '}
+                    <span className="font-medium">{result.cell_statistics.rejected_count}</span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Disease Results */}
+            {result.results && Object.entries(result.results).map(([disease, data]) => (
+              <div
+                key={disease}
+                className={`p-4 rounded-xl border ${
+                  data.diagnosis === 'Positive'
+                    ? 'bg-red-50 border-red-200'
+                    : 'bg-green-50 border-green-200'
+                }`}
+              >
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-lg font-semibold capitalize">{disease}</h3>
+                  <span
+                    className={`px-3 py-1 rounded-full text-sm font-medium ${
+                      data.diagnosis === 'Positive'
+                        ? 'bg-red-100 text-red-700'
+                        : 'bg-green-100 text-green-700'
+                    }`}
+                  >
+                    {data.diagnosis}
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-sm">
+                  <div>
+                    <span className="text-slate-500">Confidence:</span>{' '}
+                    <span className="font-medium">{(data.confidence * 100).toFixed(1)}%</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-500">Positive Rate:</span>{' '}
+                    <span className="font-medium">{(data.positive_rate * 100).toFixed(1)}%</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-500">Positive Count:</span>{' '}
+                    <span className="font-medium">{data.positive_count}</span>
+                  </div>
+                  {data.severity && (
+                    <div>
+                      <span className="text-slate-500">Severity:</span>{' '}
+                      <span className="font-medium capitalize">{data.severity}</span>
+                    </div>
+                  )}
+                </div>
+                {data.cell_distribution && (
+                  <div className="mt-3 pt-3 border-t border-slate-200">
+                    <span className="text-xs text-slate-500">Cell Distribution:</span>
+                    <div className="flex flex-wrap gap-2 mt-1">
+                      {Object.entries(data.cell_distribution).map(([label, count]) => (
+                        <span key={label} className="px-2 py-1 bg-white rounded text-xs">
+                          {label}: {count}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
+
+            {/* Disclaimer */}
+            {result.disclaimer && (
+              <p className="text-xs text-slate-400 text-center">{result.disclaimer}</p>
+            )}
+          </motion.div>
+        )}
       </div>
     </div>
   )
