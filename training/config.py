@@ -1,6 +1,6 @@
 """
 LokiVision - Training Configuration
-Elliptocytosis instead of Thalassemia
+Malaria + Thalassemia only
 """
 
 from dataclasses import dataclass
@@ -34,28 +34,20 @@ class MalariaConfig(TrainingConfig):
     class_names: list = ["parasitized", "uninfected"]
 
 
-class SickleConfig(TrainingConfig):
-    """Sickle Cell: normal, sickle, target, other"""
-    disease: str = "sickle"
-    num_classes: int = 4
-    class_names: list = ["normal", "sickle", "target", "other_abnormal"]
-
-
-class ElliptocytosisConfig(TrainingConfig):
-    """Elliptocytosis: normal, elliptocyte, oval, pencil_cigar"""
-    disease: str = "elliptocytosis"
-    num_classes: int = 4
-    class_names: list = ["normal", "elliptocyte", "oval", "pencil_cigar"]
-    batch_size: int = 24  # Slightly smaller for shape features
+class ThalConfig(TrainingConfig):
+    """Thalassemia: normal, hypochromic, target, pencil, microcytic"""
+    disease: str = "thalassemia"
+    num_classes: int = 5
+    class_names: list = ["normal", "hypochromic", "target", "pencil", "microcytic"]
+    batch_size: int = 24
 
 
 def get_config(disease: str) -> TrainingConfig:
     """Get config for specific disease"""
     configs = {
         'malaria': MalariaConfig(),
-        'sickle': SickleConfig(),
-        'elliptocytosis': ElliptocytosisConfig(),
-        'ellipt': ElliptocytosisConfig(),
+        'thal': ThalConfig(),
+        'thalassemia': ThalConfig(),
     }
     
     disease_lower = disease.lower()

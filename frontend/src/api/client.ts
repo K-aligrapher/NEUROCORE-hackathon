@@ -93,6 +93,28 @@ export interface AnalysisResult {
   }
   results?: {
     malaria: DiseaseResult
+    thalassemia: DiseaseResult
+  }
+  quality_flags: string[]
+  overall_recommendation?: string
+  disclaimer?: string
+  error_message?: string
+  model_versions?: Record<string, string>
+}
+  image?: {
+    original_url?: string
+    annotated_url?: string
+    thumbnail_url?: string
+  }
+  cell_statistics?: {
+    total_detected: number
+    rbc_count: number
+    wbc_count: number
+    platelet_count: number
+    rejected_count: number
+  }
+  results?: {
+    malaria: DiseaseResult
     sickle_cell: DiseaseResult
     elliptocytosis: DiseaseResult  // Changed from thalassemia
   }

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 LokiVision - GPU-Optimized Blood Smear Analysis Pipeline
-With Elliptocytosis replacement + comprehensive debugging
+Malaria + Thalassemia only (with debugging)
 """
 
 import torch
@@ -17,28 +17,8 @@ import structlog
 import time
 import sys
 
-# Configure structured logging with console output for debugging
-structlog.configure(
-    processors=[
-        structlog.stdlib.filter_by_level,
-        structlog.stdlib.add_logger_name,
-        structlog.stdlib.add_log_level,
-        structlog.processors.TimeStamper(fmt="%H:%M:%S"),
-        structlog.processors.StackInfoRenderer(),
-        structlog.processors.format_exc_info,
-        structlog.processors.JSONRenderer()
-    ],
-    wrapper_class=structlog.stdlib.BoundLogger,
-    context_class=dict,
-    logger_factory=structlog.stdlib.LoggerFactory(),
-    cache_logger_on_first_use=True,
-)
-
-logger = structlog.get_logger("lokivision")
-
-# Print debug wrapper to console
+# Console output for debugging
 def DEBUG(msg: str):
-    """Print debug message to console"""
     print(f"[DEBUG {time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 def INFO(msg: str):
@@ -62,14 +42,13 @@ class InferenceConfig:
 
 class MultiDiseaseClassifier(nn.Module):
     """
-    SINGLE MODEL for 3 diseases:
+    TWO DISEASE MODEL:
     1. Malaria: [parasitized, uninfected]
-    2. Sickle: [normal, sickle, target, other]
-    3. Elliptocytosis: [normal, elliptocyte, oval, pencil/cigar]  <-- CHANGED!
+    2. Thalassemia: [normal, hypochromic, target, pencil, microcytic]  <-- RESTORED!
     """
     
-    def __init__(self, num_classes_per_disease: List[int] = [2, 4, 4], model_path: Optional[str] = None):
-        INFO("Loading MultiDiseaseClassifier...")
+    def __init__(self, num_classes_per_disease: List[int] = [2, 5], model_path: Optional[str] = None):
+        INFO("Loading MultiDiseaseClassifier (Malaria + Thalassemia)...")
         super().__init__()
         
         # Load EfficientNet-B0
@@ -92,12 +71,8 @@ class MultiDiseaseClassifier(nn.Module):
         # Malaria: 2 classes (parasitized, uninfected)
         self.malaria_head = nn.Linear(self.feature_dim, 2)
         
-        # Sickle: 4 classes (normal, sickle, target, other_abnormal)
-        self.sickle_head = nn.Linear(self.feature_dim + 12, 4)
-        
-        # Elliptocytosis: 4 classes (normal, elliptocyte, oval, pencil_cigar)
-        # This replaces Thalassemia detection
-        self.elliptocytosis_head = nn.Linear(self.feature_dim + 8, 4)
+        # Thalassemia: 5 classes (normal, hypochromic, target, pencil, microcytic)
+        self.thal_head = nn.Linear(self.feature_dim + 5, 5)
         
         # Load trained weights
         if model_path and Path(model_path).exists():
@@ -110,128 +85,41 @@ class MultiDiseaseClassifier(nn.Module):
         else:
             WARN("NO TRAINED MODEL - using untrained model")
     
-    def extract_shape_features(self, x: torch.Tensor) -> torch.Tensor:
-        """Extract shape features for sickle detection"""
-        DEBUG("Extracting shape features...")
+    def extract_color_features(self, x: torch.Tensor) -> torch.Tensor:
+        """Extract color features for thalassemia detection"""
+        DEBUG("Extracting color features for thalassemia...")
         
         batch_size = x.size(0)
-        shape_features = []
+        color_features = []
         
         x_np = (x.cpu().numpy().transpose(0, 2, 3, 1) * 255).astype(np.uint8)
         
         for i in range(batch_size):
             img = x_np[i]
-            gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
-            _, binary = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)
-            contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
-            if contours:
-                cnt = max(contours, key=cv2.contourArea)
-                area = cv2.contourArea(cnt)
-                perimeter = cv2.arcLength(cnt, True) + 1e-6
-                circularity = 4 * np.pi * area / (perimeter ** 2)
-                
-                x, y, w, h = cv2.boundingRect(cnt)
-                aspect = w / (h + 1e-6)
-                
-                hull = cv2.convexHull(cnt)
-                hull_area = cv2.contourArea(hull) + 1e-6
-                solidity = area / hull_area
-                
-                rect_area = w * h + 1e-6
-                extent = area / rect_area
-                
-                # Major/minor axis for elliptocyte detection
-                try:
-                    if len(cnt) >= 5:
-                        ell = cv2.fitEllipse(cnt)
-                        major_axis = max(ell[1])
-                        minor_axis = min(ell[1])
-                        axis_ratio = minor_axis / (major_axis + 1e-6)
-                    else:
-                        axis_ratio = 1.0
-                except:
-                    axis_ratio = 1.0
-                
-                features = [circularity, aspect, solidity, extent, axis_ratio, 
-                          1/circularity if circularity > 0.1 else 10] + list(np.zeros(5))
-            else:
-                features = [0.5, 1.0, 0.5, 0.5, 1.0] + list(np.zeros(5))
+            # LAB color space
+            lab = cv2.cvtColor(img, cv2.COLOR_RGB2LAB)
+            l, a, b = lab[:,:,0], lab[:,:,1], lab[:,:,2]
             
-            shape_features.append(features[:11])
-        
-        DEBUG(f"Shape features: {len(shape_features)} samples")
-        return torch.tensor(shape_features, dtype=torch.float32)
-    
-    def extract_elliptocyte_features(self, x: torch.Tensor) -> torch.Tensor:
-        """Extract features specifically for elliptocyte/pencil/cigar detection"""
-        DEBUG("Extracting elliptocyte features...")
-        
-        batch_size = x.size(0)
-        ellipt_features = []
-        
-        x_np = (x.cpu().numpy().transpose(0, 2, 3, 1) * 255).astype(np.uint8)
-        
-        for i in range(batch_size):
-            img = x_np[i]
-            gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
-            _, binary = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)
-            contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            h, w = img.shape[:2]
+            center = img[h//4:3*h//4, w//4:3*w//4]
             
-            features = [0.5, 0.5, 0.5, 0.5, 1.0, 1.0, 0.5, 0.5]  # default
+            # Central pallor - critical for thalassemia!
+            center_mean = np.mean(center)
+            overall_mean = np.mean(img)
+            pallor_ratio = 1 - (center_mean / (overall_mean + 1e-6))
             
-            if contours:
-                cnt = max(contours, key=cv2.contourArea)
-                
-                # Get bounding box
-                x, y, w, h = cv2.boundingRect(cnt)
-                
-                # Aspect ratio - very important for elliptocytes!
-                aspect_ratio = w / (h + 1e-6)
-                extent_ratio = w * h / ((x_np.shape[1] * x_np.shape[0]) + 1e-6)
-                
-                # Perimeter
-                perimeter = cv2.arcLength(cnt, True) + 1e-6
-                
-                # Circularity (elliptocytes have low circularity)
-                area = cv2.contourArea(cnt)
-                circularity = 4 * np.pi * area / (perimeter ** 2)
-                
-                # Try ellipse fitting
-                if len(cnt) >= 5:
-                    try:
-                        ell = cv2.fitEllipse(cnt)
-                        (cx, cy), (ma, mb), angle = ell
-                        ellipticity = min(ma, mb) / (max(ma, mb) + 1e-6)  # close to 1 = circle
-                        eccentricity = np.sqrt(1 - ellipticity ** 2)
-                    except:
-                        ellipticity = 1.0
-                        eccentricity = 0.0
-                else:
-                    ellipticity = 1.0
-                    eccentricity = 0.0
-                
-                # Cigar/pencil detection - very elongated with nearly parallel sides
-                is_cigar = 1.0 if (aspect_ratio < 0.4 or aspect_ratio > 2.5) else 0.0
-                
-                # Ovals - moderately elongated
-                is_oval = 1.0 if (0.4 <= aspect_ratio < 0.6 or 1.7 < aspect_ratio <= 2.5) else 0.0
-                
-                features = [
-                    aspect_ratio,           # 1: width/height ratio
-                    circularity,            # 2: how circular
-                    ellipticity,            # 3: ellipse fit
-                    eccentricity,          # 4: eccentricity
-                    is_cigar,              # 5: cigar-shaped indicator
-                    is_oval,               # 6: oval-shaped indicator
-                    extent_ratio,         # 7: area in bounding box
-                    1 - abs(1 - aspect_ratio)  # 8: deviation from 1
-                ]
+            # Color channel statistics
+            l_mean = np.mean(l) / 255
+            a_mean = np.mean(a) / 255
+            b_mean = np.mean(b) / 255
+            l_std = np.std(l) / 255
             
-            ellipt_features.append(features)
+            features = [pallor_ratio, l_mean, a_mean, b_mean, l_std]
+            color_features.append(features)
         
-        DEBUG(f"Elliptocyte features: {len(ellipt_features)} samples")
-        return torch.tensor(ellipt_features, dtype=torch.float32)
+        DEBUG(f"Color features: {len(color_features)} samples")
+        return torch.tensor(color_features, dtype=torch.float32)
     
     def forward(self, x: torch.Tensor):
         DEBUG(f"Forward pass input: {x.shape}")
@@ -241,20 +129,15 @@ class MultiDiseaseClassifier(nn.Module):
         features = F.adaptive_avg_pool2d(features, 1).view(features.size(0), -1)
         DEBUG(f"Features shape: {features.shape}")
         
-        # Malaria (texture)
+        # Malaria (texture-based)
         malaria_logits = self.malaria_head(features)
         
-        # Sickle (shape)
-        shape_feats = self.extract_shape_features(x)
-        sickle_input = torch.cat([features, shape_feats.to(x.device)], dim=1)
-        sickle_logits = self.sickle_head(sickle_input)
+        # Thalassemia (color-based)
+        color_feats = self.extract_color_features(x).to(x.device)
+        thal_input = torch.cat([features, color_feats], dim=1)
+        thal_logits = self.thal_head(thal_input)
         
-        # Elliptocytosis (specific shape features!)
-        ellipt_feats = self.extract_elliptocyte_features(x).to(x.device)
-        ellipt_input = torch.cat([features, ellipt_feats], dim=1)
-        ellipt_logits = self.elliptocytosis_head(ellipt_input)
-        
-        return malaria_logits, sickle_logits, ellipt_logits
+        return malaria_logits, thal_logits
 
 
 class YOLOv8Detector:
@@ -362,9 +245,7 @@ class YOLOv8Detector:
 
 
 class OptimizedPipeline:
-    """
-    GPU-OPTIMIZED pipeline with Elliptocytosis detection
-    """
+    """GPU-OPTIMIZED pipeline with Malaria + Thalassemia"""
     
     def __init__(self, config: Optional[InferenceConfig] = None):
         self.config = config or InferenceConfig()
@@ -393,6 +274,7 @@ class OptimizedPipeline:
         
         INFO("="*60)
         INFO(f"Pipeline ready! Device: {self.device}")
+        INFO("Diseases: Malaria + Thalassemia")
         INFO("="*60)
     
     def _get_device(self):
@@ -406,8 +288,7 @@ class OptimizedPipeline:
         model_paths = [
             "models/multi_disease_classifier.pt",
             "models/malaria_classifier.pt",
-            "models/sickle_classifier.pt",
-            "models/elliptocytosis_classifier.pt"
+            "models/thal_classifier.pt"
         ]
         
         for path in model_paths:
@@ -422,7 +303,7 @@ class OptimizedPipeline:
         return MultiDiseaseClassifier()
     
     def run(self, image: np.ndarray) -> Dict:
-        """Run analysis with Elliptocytosis detection"""
+        """Run analysis with Malaria + Thalassemia"""
         
         INFO("="*60)
         INFO("STARTING ANALYSIS")
@@ -473,16 +354,13 @@ class OptimizedPipeline:
         DEBUG(f"  Batch: {batch.shape}")
         
         with torch.no_grad():
-            mal_logits, sick_logits, ellipt_logits = self.classifier(batch)
+            mal_logits, thal_logits = self.classifier(batch)
             
             mal_preds = torch.argmax(mal_logits, dim=1)
             mal_probs = F.softmax(mal_logits, dim=1).max(dim=1)[0]
             
-            sick_preds = torch.argmax(sick_logits, dim=1)
-            sick_probs = F.softmax(sick_logits, dim=1).max(dim=1)[0]
-            
-            ellipt_preds = torch.argmax(ellipt_logits, dim=1)
-            ellipt_probs = F.softmax(ellipt_logits, dim=1).max(dim=1)[0]
+            thal_preds = torch.argmax(thal_logits, dim=1)
+            thal_probs = F.softmax(thal_logits, dim=1).max(dim=1)[0]
         
         t_class = time.time() - t3
         INFO(f"  Classification in {t_class:.2f}s")
@@ -493,12 +371,10 @@ class OptimizedPipeline:
         cell_count = len(cell_tensors)
         
         mal_pos = int((mal_preds == 0).sum())  # parasitized
-        sick_pos = int((sick_preds == 1).sum())  # sickle
-        ellipt_pos = int((ellipt_preds != 0).sum())  # abnormal elliptocytes
+        thal_pos = int((thal_preds != 0).sum())  # abnormal thalassemia
         
         mal_rate = mal_pos / cell_count
-        sick_rate = sick_pos / cell_count
-        ellipt_rate = ellipt_pos / cell_count
+        thal_rate = thal_pos / cell_count
         
         mal_severity = "severe" if mal_rate > 0.05 else "moderate" if mal_rate > 0.01 else "low"
         
@@ -508,8 +384,7 @@ class OptimizedPipeline:
         INFO("ANALYSIS COMPLETE!")
         INFO(f"Total: {t_total:.2f}s | Cells: {cell_count}")
         INFO(f"Malaria: {'+' if mal_pos > 0 else '-'} ({mal_pos}, {mal_rate*100:.1f}%)")
-        INFO(f"Sickle: {'+' if sick_pos > 0 else '-'} ({sick_pos}, {sick_rate*100:.1f}%)")
-        INFO(f"Elliptocytosis: {'+' if ellipt_pos > 0 else '-'} ({ellipt_pos}, {ellipt_rate*100:.1f}%)")
+        INFO(f"Thalassemia: {'+' if thal_pos > 0 else '-'} ({thal_pos}, {thal_rate*100:.1f}%)")
         INFO("="*60)
         
         return {
@@ -532,29 +407,23 @@ class OptimizedPipeline:
                     'severity': mal_severity,
                     'cell_distribution': {'parasitized': mal_pos, 'uninfected': cell_count - mal_pos}
                 },
-                'sickle_cell': {
-                    'diagnosis': 'Positive' if sick_pos > 0 else 'Negative',
-                    'confidence': round(float(sick_probs.mean()), 3),
-                    'positive_rate': round(sick_rate, 3),
-                    'positive_count': sick_pos,
-                    'cell_distribution': {'normal': cell_count-sick_pos, 'sickle': sick_pos, 'target': 0, 'other': 0}
-                },
-                'elliptocytosis': {  # CHANGED FROM THALASSEMIA
-                    'diagnosis': 'Positive' if ellipt_pos > 0 else 'Negative',
-                    'confidence': round(float(ellipt_probs.mean()), 3),
-                    'positive_rate': round(ellipt_rate, 3),
-                    'positive_count': ellipt_pos,
+                'thalassemia': {
+                    'diagnosis': 'Positive' if thal_pos > 0 else 'Negative',
+                    'confidence': round(float(thal_probs.mean()), 3),
+                    'positive_rate': round(thal_rate, 3),
+                    'positive_count': thal_pos,
                     'cell_distribution': {
-                        'normal': cell_count - ellipt_pos,
-                        'elliptocyte': int((ellipt_preds == 1).sum()),
-                        'oval': int((ellipt_preds == 2).sum()),
-                        'pencil_cigar': int((ellipt_preds == 3).sum())
+                        'normal': cell_count - thal_pos,
+                        'hypochromic': int((thal_preds == 1).sum()),
+                        'target': int((thal_preds == 2).sum()),
+                        'pencil': int((thal_preds == 3).sum()),
+                        'microcytic': int((thal_preds == 4).sum())
                     }
                 }
             },
             'quality_flags': [],
             'disclaimer': 'AI-assisted only. Not for clinical diagnosis.',
-            'model_versions': {'segmentor': 'yolov8n', 'classifier': 'multi-disease-v2'}
+            'model_versions': {'segmentor': 'yolov8n', 'classifier': 'malaria-thal-v1'}
         }
 
 

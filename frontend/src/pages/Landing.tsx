@@ -176,11 +176,11 @@ export default function Landing() {
               Disease Coverage
             </h2>
             <p className="text-xl text-slate-600 max-w-2xl mx-auto">
-              Detect three clinically significant blood diseases
+              Detect two clinically significant blood diseases
             </p>
           </div>
           
-          <div className="grid md:grid-cols-3 gap-8">
+          <div className="grid md:grid-cols-2 gap-8">
             {[
               {
                 name: "Malaria",
@@ -189,14 +189,8 @@ export default function Landing() {
                 color: "malaria"
               },
               {
-                name: "Sickle Cell",
-                description: "Identifies sickle-shaped cells and abnormal morphology",
-                stats: "97%+ AUC",
-                color: "sickle"
-              },
-              {
-                name: "Elliptocytosis",
-                description: "Detects oval, cigar-shaped and irregular elliptic red blood cells",
+                name: "Thalassemia",
+                description: "Screens for hypochromic, target, and microcytic red blood cells",
                 stats: "93%+ AUC",
                 color: "thal"
               }
@@ -209,14 +203,12 @@ export default function Landing() {
                 viewport={{ once: true }}
                 className={`p-8 rounded-2xl border-2 ${
                   disease.color === 'malaria' ? 'border-red-200 bg-red-50' :
-                  disease.color === 'sickle' ? 'border-orange-200 bg-orange-50' :
                   'border-amber-200 bg-amber-50'
                 }`}
               >
                 <div className="flex items-center justify-between mb-4">
                   <h3 className={`text-2xl font-semibold ${
                     disease.color === 'malaria' ? 'text-red-700' :
-                    disease.color === 'sickle' ? 'text-orange-700' :
                     'text-amber-700'
                   }`}>
                     {disease.name}

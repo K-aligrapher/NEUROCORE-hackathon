@@ -47,9 +47,9 @@ export default function AnalysisResult() {
     const diagnosis = res.diagnosis?.toLowerCase() || ''
     if (diagnosis.includes('positive') || diagnosis.includes('suggestive')) {
       return { 
-        color: disease === 'malaria' ? 'red' : disease === 'sickle_cell' ? 'orange' : 'amber',
+        color: disease === 'malaria' ? 'red' : 'amber',
         label: res.diagnosis,
-        bg: disease === 'malaria' ? 'bg-red-50 border-red-200' : disease === 'sickle_cell' ? 'bg-orange-50 border-orange-200' : 'bg-amber-50 border-amber-200'
+        bg: disease === 'malaria' ? 'bg-red-50 border-red-200' : 'bg-amber-50 border-amber-200'
       }
     }
     return { 
@@ -110,12 +110,12 @@ export default function AnalysisResult() {
         </motion.div>
 
         {/* Disease Results */}
-        <div className="grid md:grid-cols-3 gap-6 mb-8">
-          {['malaria', 'sickle_cell', 'elliptocytosis'].map((disease, i) => {
+        <div className="grid md:grid-cols-2 gap-6 mb-8">
+          {['malaria', 'thalassemia'].map((disease, i) => {
             const status = getDiseaseStatus(disease)
             const res = result.results?.[disease]
-            const diseaseName = disease === 'malaria' ? 'Malaria' : disease === 'sickle_cell' ? 'Sickle Cell' : 'Elliptocytosis'
-            const iconColor = status.color === 'red' ? 'text-red-600' : status.color === 'orange' ? 'text-orange-600' : status.color === 'amber' ? 'text-amber-600' : 'text-green-600'
+            const diseaseName = disease === 'malaria' ? 'Malaria' : 'Thalassemia'
+            const iconColor = status.color === 'red' ? 'text-red-600' : status.color === 'amber' ? 'text-amber-600' : 'text-green-600'
 
             return (
               <motion.div
