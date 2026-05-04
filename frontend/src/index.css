@@ -1,0 +1,97 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --color-bg-base: #FFFFFF;
+  --color-bg-subtle: #F0F8FF;
+  --color-bg-muted: #E1F0FA;
+  --color-surface: #FFFFFF;
+  --color-surface-elevated: #F7FBFF;
+
+  --color-sky-50: #F0F9FF;
+  --color-sky-100: #E0F2FE;
+  --color-sky-200: #BAE6FD;
+  --color-sky-300: #7DD3FC;
+  --color-sky-400: #38BDF8;
+  --color-sky-500: #0EA5E9;
+  --color-sky-600: #0284C7;
+  --color-sky-700: #0369A1;
+
+  --color-malaria: #EF4444;
+  --color-sickle: #F97316;
+  --color-thal: #EAB308;
+  --color-negative: #22C55E;
+  --color-uncertain: #94A3B8;
+
+  --color-text-primary: #0F172A;
+  --color-text-secondary: #475569;
+  --color-text-muted: #94A3B8;
+  --color-text-on-primary: #FFFFFF;
+
+  --font-display: 'DM Serif Display', Georgia, serif;
+  --font-body: 'DM Sans', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+
+  --radius-sm: 6px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 24px;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: var(--font-body);
+  background: linear-gradient(135deg, #FFFFFF 0%, #E0F2FE 40%, #BAE6FD 100%);
+  color: var(--color-text-primary);
+  min-height: 100vh;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-white text-foreground;
+  }
+}
+
+@layer components {
+  .gradient-hero {
+    background: linear-gradient(135deg, #FFFFFF 0%, #E0F2FE 40%, #BAE6FD 100%);
+  }
+  
+  .gradient-card {
+    background: linear-gradient(160deg, #FFFFFF 0%, #F0F9FF 100%);
+  }
+  
+  .gradient-button {
+    background: linear-gradient(135deg, #0EA5E9 0%, #0284C7 100%);
+  }
+  
+  .gradient-malaria {
+    background: linear-gradient(135deg, #FEF2F2 0%, #FEE2E2 100%);
+  }
+  
+  .gradient-negative {
+    background: linear-gradient(135deg, #F0FDF4 0%, #DCFCE7 100%);
+  }
+}
+
+.animate-float {
+  animation: float 6s ease-in-out infinite;
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(-20px); }
+}
+
+.animate-pulse-slow {
+  animation: pulse 4s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
