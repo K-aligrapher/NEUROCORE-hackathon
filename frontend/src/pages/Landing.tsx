@@ -195,8 +195,8 @@ export default function Landing() {
                 color: "sickle"
               },
               {
-                name: "Thalassemia",
-                description: "Screens for hypochromic and target cells",
+                name: "Elliptocytosis",
+                description: "Detects oval, cigar-shaped and irregular elliptic red blood cells",
                 stats: "93%+ AUC",
                 color: "thal"
               }

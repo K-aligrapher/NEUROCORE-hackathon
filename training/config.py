@@ -1,6 +1,6 @@
 """
 LokiVision - Training Configuration
-Optimized for NVIDIA RTX 5050 8GB VRAM
+Elliptocytosis instead of Thalassemia
 """
 
 from dataclasses import dataclass
@@ -9,61 +9,44 @@ from pathlib import Path
 
 @dataclass
 class TrainingConfig:
-    """Training configuration optimized for 8GB GPU"""
+    """Training configuration optimized for 8GB VRAM"""
     
-    # Paths
-    data_dir: str = "data"
+    data_dir: str = "training\data"
     output_dir: str = "models"
-    
-    # Model settings
     model_name: str = "efficientnet_b0"
-    img_size: int = 128  # Smaller for 8GB VRAM
-    num_classes: int = 2
-    
-    # Training settings (optimized for 8GB VRAM)
-    batch_size: int = 32  # 32 for 8GB
+    img_size: int = 128
+    num_workers: int = 4
+    batch_size: int = 32
     num_epochs: int = 50
     learning_rate: float = 1e-4
     weight_decay: float = 1e-5
-    
-    # GPU settings
     device: str = "cuda"
-    num_workers: int = 4
-    
-    # Optimizations
-    use_amp: bool = True  # Mixed precision for 8GB
-    use_gradient_checkpointing: bool = False
-    
-    # Early stopping
+    use_amp: bool = True
     early_stopping_patience: int = 10
-    
-    # Data split
     val_split: float = 0.15
     test_split: float = 0.15
 
 
 class MalariaConfig(TrainingConfig):
-    """Malaria classification config"""
-    model_name: str = "efficientnet_b0"
-    num_classes: int = 2  # parasitized, uninfected
-    batch_size: int = 32
-    learning_rate: float = 1e-4
-    
+    """Malaria: parasitized vs uninfected"""
+    disease: str = "malaria"
+    num_classes: int = 2
+    class_names: list = ["parasitized", "uninfected"]
+
 
 class SickleConfig(TrainingConfig):
-    """Sickle cell classification config"""
-    model_name: str = "mobilenet_v3_large"
-    num_classes: int = 4  # normal, sickle, target, other
-    batch_size: int = 24  # Smaller due to shape features
-    learning_rate: float = 8e-5
+    """Sickle Cell: normal, sickle, target, other"""
+    disease: str = "sickle"
+    num_classes: int = 4
+    class_names: list = ["normal", "sickle", "target", "other_abnormal"]
 
 
-class ThalConfig(TrainingConfig):
-    """Thalassemia classification config"""
-    model_name: str = "efficientnet_b2"
-    num_classes: int = 5  # normal, hypochromic, target, pencil, microcytic
-    batch_size: int = 24
-    learning_rate: float = 1e-4
+class ElliptocytosisConfig(TrainingConfig):
+    """Elliptocytosis: normal, elliptocyte, oval, pencil_cigar"""
+    disease: str = "elliptocytosis"
+    num_classes: int = 4
+    class_names: list = ["normal", "elliptocyte", "oval", "pencil_cigar"]
+    batch_size: int = 24  # Slightly smaller for shape features
 
 
 def get_config(disease: str) -> TrainingConfig:
@@ -71,6 +54,36 @@ def get_config(disease: str) -> TrainingConfig:
     configs = {
         'malaria': MalariaConfig(),
         'sickle': SickleConfig(),
-        'thal': ThalConfig()
+        'elliptocytosis': ElliptocytosisConfig(),
+        'ellipt': ElliptocytosisConfig(),
     }
-    return configs.get(disease.lower(), MalariaConfig())
+    
+    disease_lower = disease.lower()
+    if disease_lower in configs:
+        return configs[disease_lower]
+    
+    # Try partial match
+    for key, config in configs.items():
+        if key in disease_lower or disease_lower in key:
+            return config
+    
+    print(f"[WARN] Unknown disease: {disease}, using MalariaConfig")
+    return MalariaConfig()
+
+
+def print_config(config: TrainingConfig):
+    """Print training config"""
+    print("="*50)
+    print("TRAINING CONFIG")
+    print("="*50)
+    print(f"Disease:    {config.disease}")
+    print(f"Classes:    {config.num_classes}")
+    print(f"Class names: {config.class_names}")
+    print(f"Data dir:   {config.data_dir}")
+    print(f"Output dir: {config.output_dir}")
+    print(f"Batch:      {config.batch_size}")
+    print(f"Epochs:     {config.num_epochs}")
+    print(f"LR:         {config.learning_rate}")
+    print(f"Device:     {config.device}")
+    print(f"AMP:        {config.use_amp}")
+    print("="*50)

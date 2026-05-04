@@ -72,11 +72,36 @@ export interface AnalysisResult {
   created_at: string
   completed_at?: string
   processing_time_ms?: number
+  device?: string
+  timing?: {
+    detection: number
+    crop: number
+    classify: number
+    total: number
+  }
   image?: {
     original_url?: string
     annotated_url?: string
     thumbnail_url?: string
   }
+  cell_statistics?: {
+    total_detected: number
+    rbc_count: number
+    wbc_count: number
+    platelet_count: number
+    rejected_count: number
+  }
+  results?: {
+    malaria: DiseaseResult
+    sickle_cell: DiseaseResult
+    elliptocytosis: DiseaseResult  // Changed from thalassemia
+  }
+  quality_flags: string[]
+  overall_recommendation?: string
+  disclaimer?: string
+  error_message?: string
+  model_versions?: Record<string, string>
+}
   cell_statistics?: CellStatistics
   results?: {
     malaria: DiseaseResult

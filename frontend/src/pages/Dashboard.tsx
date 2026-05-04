@@ -60,7 +60,7 @@ export default function Dashboard() {
             { label: 'Total Analyses', value: history?.length || 0, color: 'sky' },
             { label: 'Malaria +', value: 0, color: 'red' },
             { label: 'Sickle +', value: 0, color: 'orange' },
-            { label: 'Thalassemia', value: 0, color: 'amber' },
+            { label: 'Elliptocytosis', value: 0, color: 'amber' },
           ].map((stat, i) => (
             <div key={i} className="bg-white rounded-xl p-6 border border-slate-100">
               <p className="text-sm text-slate-500 mb-1">{stat.label}</p>

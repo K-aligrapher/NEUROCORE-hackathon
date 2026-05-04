@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 LokiVision - GPU-Optimized Blood Smear Analysis Pipeline
-With comprehensive error handling and progress logging
+With Elliptocytosis replacement + comprehensive debugging
 """
 
 import torch
@@ -15,8 +15,9 @@ from typing import List, Dict, Optional
 from dataclasses import dataclass
 import structlog
 import time
+import sys
 
-# Configure structured logging
+# Configure structured logging with console output for debugging
 structlog.configure(
     processors=[
         structlog.stdlib.filter_by_level,
@@ -35,10 +36,23 @@ structlog.configure(
 
 logger = structlog.get_logger("lokivision")
 
+# Print debug wrapper to console
+def DEBUG(msg: str):
+    """Print debug message to console"""
+    print(f"[DEBUG {time.strftime('%H:%M:%S')}] {msg}", flush=True)
+
+def INFO(msg: str):
+    print(f"[INFO {time.strftime('%H:%M:%S')}] {msg}", flush=True)
+
+def ERROR(msg: str):
+    print(f"[ERROR {time.strftime('%H:%M:%S')}] {msg}", flush=True)
+
+def WARN(msg: str):
+    print(f"[WARN {time.strftime('%H:%M:%S')}] {msg}", flush=True)
+
 
 @dataclass
 class InferenceConfig:
-    """Configuration optimized for 8GB VRAM"""
     device: str = "cuda"
     batch_size: int = 32
     img_size: int = 128
@@ -46,76 +60,60 @@ class InferenceConfig:
     max_cells_analysis: int = 200
 
 
-class ModelLoadError(Exception):
-    """Custom exception for model loading errors"""
-    pass
-
-
-class DetectionError(Exception):
-    """Custom exception for detection errors"""
-    pass
-
-
-class ClassificationError(Exception):
-    """Custom exception for classification errors"""
-    pass
-
-
 class MultiDiseaseClassifier(nn.Module):
     """
-    SINGLE MODEL for all 3 diseases!
-    EfficientNet-B0 backbone + disease-specific heads
-    
-    Classes:
-    - Malaria: [parasitized, uninfected]
-    - Sickle: [normal, sickle, target, other_abnormal]  
-    - Thal: [normal, hypochromic, target, pencil, microcytic]
+    SINGLE MODEL for 3 diseases:
+    1. Malaria: [parasitized, uninfected]
+    2. Sickle: [normal, sickle, target, other]
+    3. Elliptocytosis: [normal, elliptocyte, oval, pencil/cigar]  <-- CHANGED!
     """
     
-    def __init__(self, num_classes_per_disease: List[int] = [2, 4, 5], model_path: Optional[str] = None):
+    def __init__(self, num_classes_per_disease: List[int] = [2, 4, 4], model_path: Optional[str] = None):
+        INFO("Loading MultiDiseaseClassifier...")
         super().__init__()
         
-        logger.info("Loading EfficientNet-B0 backbone...")
-        t0 = time.time()
-        
-        # Load pretrained EfficientNet-B0
+        # Load EfficientNet-B0
         try:
             from torchvision.models import efficientnet_b0, EfficientNet_B0_Weights
             weights = EfficientNet_B0_Weights.DEFAULT
             self.backbone = efficientnet_b0(weights=weights)
-            logger.info(f"EfficientNet-B0 backbone loaded in {time.time()-t0:.1f}s")
+            INFO("EfficientNet-B0 backbone loaded")
         except Exception as e:
-            raise ModelLoadError(f"Failed to load EfficientNet-B0: {e}")
+            ERROR(f"Failed to load EfficientNet: {e}")
+            raise
         
         self.feature_dim = 1280
         
-        # Freeze early layers for faster inference
-        logger.info("Freezing early backbone layers...")
+        # Freeze early layers
         for i, param in enumerate(self.backbone.features[:5].parameters()):
             param.requires_grad = False
         
         # Disease-specific heads
-        self.malaria_head = nn.Linear(self.feature_dim, num_classes_per_disease[0])
-        self.sickle_head = nn.Linear(self.feature_dim + 12, num_classes_per_disease[1])
-        self.thal_head = nn.Linear(self.feature_dim + 5, num_classes_per_disease[2])
+        # Malaria: 2 classes (parasitized, uninfected)
+        self.malaria_head = nn.Linear(self.feature_dim, 2)
         
-        # Load trained weights if available
+        # Sickle: 4 classes (normal, sickle, target, other_abnormal)
+        self.sickle_head = nn.Linear(self.feature_dim + 12, 4)
+        
+        # Elliptocytosis: 4 classes (normal, elliptocyte, oval, pencil_cigar)
+        # This replaces Thalassemia detection
+        self.elliptocytosis_head = nn.Linear(self.feature_dim + 8, 4)
+        
+        # Load trained weights
         if model_path and Path(model_path).exists():
-            logger.info(f"Loading trained weights from {model_path}")
+            INFO(f"Loading weights from {model_path}")
             try:
                 self.load_state_dict(torch.load(model_path, map_location='cpu'))
-                logger.info("Trained weights loaded successfully!")
+                INFO("Trained weights loaded!")
             except Exception as e:
-                logger.warning(f"Could not load trained weights: {e}")
-                logger.warning("Using pretrained backbone (not trained yet)")
+                WARN(f"Could not load weights: {e}")
         else:
-            logger.warning("="*50)
-            logger.warning("NO TRAINED MODEL FOUND!")
-            logger.warning("Please train models first: python training/train.py")
-            logger.warning("="*50)
+            WARN("NO TRAINED MODEL - using untrained model")
     
     def extract_shape_features(self, x: torch.Tensor) -> torch.Tensor:
-        """Extract shape features for sickle cell detection"""
+        """Extract shape features for sickle detection"""
+        DEBUG("Extracting shape features...")
+        
         batch_size = x.size(0)
         shape_features = []
         
@@ -143,73 +141,124 @@ class MultiDiseaseClassifier(nn.Module):
                 rect_area = w * h + 1e-6
                 extent = area / rect_area
                 
+                # Major/minor axis for elliptocyte detection
                 try:
-                    moments = cv2.moments(cnt)
-                    hu = cv2.HuMoments(moments).flatten()
-                    hu = -np.sign(hu) * np.log10(np.abs(hu) + 1e-10)
+                    if len(cnt) >= 5:
+                        ell = cv2.fitEllipse(cnt)
+                        major_axis = max(ell[1])
+                        minor_axis = min(ell[1])
+                        axis_ratio = minor_axis / (major_axis + 1e-6)
+                    else:
+                        axis_ratio = 1.0
                 except:
-                    hu = np.zeros(7)
+                    axis_ratio = 1.0
                 
-                features = [circularity, aspect, solidity, extent] + list(hu[:7])
+                features = [circularity, aspect, solidity, extent, axis_ratio, 
+                          1/circularity if circularity > 0.1 else 10] + list(np.zeros(5))
             else:
-                features = [0.5] * 11
+                features = [0.5, 1.0, 0.5, 0.5, 1.0] + list(np.zeros(5))
             
             shape_features.append(features[:11])
         
+        DEBUG(f"Shape features: {len(shape_features)} samples")
         return torch.tensor(shape_features, dtype=torch.float32)
     
-    def extract_color_features(self, x: torch.Tensor) -> torch.Tensor:
-        """Extract color features for thalassemia detection"""
+    def extract_elliptocyte_features(self, x: torch.Tensor) -> torch.Tensor:
+        """Extract features specifically for elliptocyte/pencil/cigar detection"""
+        DEBUG("Extracting elliptocyte features...")
+        
         batch_size = x.size(0)
-        color_features = []
+        ellipt_features = []
         
         x_np = (x.cpu().numpy().transpose(0, 2, 3, 1) * 255).astype(np.uint8)
         
         for i in range(batch_size):
             img = x_np[i]
+            gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+            _, binary = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)
+            contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
-            # LAB color space
-            lab = cv2.cvtColor(img, cv2.COLOR_RGB2LAB)
-            l, a, b = lab[:,:,0], lab[:,:,1], lab[:,:,2]
+            features = [0.5, 0.5, 0.5, 0.5, 1.0, 1.0, 0.5, 0.5]  # default
             
-            h, w = img.shape[:2]
-            center = img[h//4:3*h//4, w//4:3*w//4]
+            if contours:
+                cnt = max(contours, key=cv2.contourArea)
+                
+                # Get bounding box
+                x, y, w, h = cv2.boundingRect(cnt)
+                
+                # Aspect ratio - very important for elliptocytes!
+                aspect_ratio = w / (h + 1e-6)
+                extent_ratio = w * h / ((x_np.shape[1] * x_np.shape[0]) + 1e-6)
+                
+                # Perimeter
+                perimeter = cv2.arcLength(cnt, True) + 1e-6
+                
+                # Circularity (elliptocytes have low circularity)
+                area = cv2.contourArea(cnt)
+                circularity = 4 * np.pi * area / (perimeter ** 2)
+                
+                # Try ellipse fitting
+                if len(cnt) >= 5:
+                    try:
+                        ell = cv2.fitEllipse(cnt)
+                        (cx, cy), (ma, mb), angle = ell
+                        ellipticity = min(ma, mb) / (max(ma, mb) + 1e-6)  # close to 1 = circle
+                        eccentricity = np.sqrt(1 - ellipticity ** 2)
+                    except:
+                        ellipticity = 1.0
+                        eccentricity = 0.0
+                else:
+                    ellipticity = 1.0
+                    eccentricity = 0.0
+                
+                # Cigar/pencil detection - very elongated with nearly parallel sides
+                is_cigar = 1.0 if (aspect_ratio < 0.4 or aspect_ratio > 2.5) else 0.0
+                
+                # Ovals - moderately elongated
+                is_oval = 1.0 if (0.4 <= aspect_ratio < 0.6 or 1.7 < aspect_ratio <= 2.5) else 0.0
+                
+                features = [
+                    aspect_ratio,           # 1: width/height ratio
+                    circularity,            # 2: how circular
+                    ellipticity,            # 3: ellipse fit
+                    eccentricity,          # 4: eccentricity
+                    is_cigar,              # 5: cigar-shaped indicator
+                    is_oval,               # 6: oval-shaped indicator
+                    extent_ratio,         # 7: area in bounding box
+                    1 - abs(1 - aspect_ratio)  # 8: deviation from 1
+                ]
             
-            center_mean = np.mean(center)
-            overall_mean = np.mean(img)
-            pallor_ratio = 1 - (center_mean / (overall_mean + 1e-6))
-            
-            l_mean, a_mean, b_mean = np.mean(l)/255, np.mean(a)/255, np.mean(b)/255
-            l_std, a_std, b_std = np.std(l)/255, np.std(a)/255, np.std(b)/255
-            
-            features = [pallor_ratio, l_mean, a_mean, b_mean, l_std]
-            color_features.append(features)
+            ellipt_features.append(features)
         
-        return torch.tensor(color_features, dtype=torch.float32)
+        DEBUG(f"Elliptocyte features: {len(ellipt_features)} samples")
+        return torch.tensor(ellipt_features, dtype=torch.float32)
     
     def forward(self, x: torch.Tensor):
-        # Extract shared features
+        DEBUG(f"Forward pass input: {x.shape}")
+        
+        # Shared features
         features = self.backbone.features(x)
         features = F.adaptive_avg_pool2d(features, 1).view(features.size(0), -1)
+        DEBUG(f"Features shape: {features.shape}")
         
-        # Malware classification (texture-based)
+        # Malaria (texture)
         malaria_logits = self.malaria_head(features)
         
-        # Sickle classification (needs shape features)
+        # Sickle (shape)
         shape_feats = self.extract_shape_features(x)
         sickle_input = torch.cat([features, shape_feats.to(x.device)], dim=1)
         sickle_logits = self.sickle_head(sickle_input)
         
-        # Thalassemia classification (needs color features)
-        color_feats = self.extract_color_features(x).to(x.device)
-        thal_input = torch.cat([features, color_feats], dim=1)
-        thal_logits = self.thal_head(thal_input)
+        # Elliptocytosis (specific shape features!)
+        ellipt_feats = self.extract_elliptocyte_features(x).to(x.device)
+        ellipt_input = torch.cat([features, ellipt_feats], dim=1)
+        ellipt_logits = self.elliptocytosis_head(ellipt_input)
         
-        return malaria_logits, sickle_logits, thal_logits
+        return malaria_logits, sickle_logits, ellipt_logits
 
 
 class YOLOv8Detector:
-    """YOLOv8 for blood cell detection in one pass"""
+    """YOLOv8 for blood cell detection"""
     
     def __init__(self, config: InferenceConfig):
         self.config = config
@@ -220,92 +269,76 @@ class YOLOv8Detector:
     
     def _get_device(self):
         if torch.cuda.is_available():
-            device_name = torch.cuda.get_device_name()
-            logger.info(f"GPU detected: {device_name}")
-            logger.info(f"VRAM: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
+            INFO(f"GPU: {torch.cuda.get_device_name()}")
             return "cuda"
         elif hasattr(torch, 'mps') and torch.mps.is_available():
-            logger.info("Using Apple MPS (Apple Silicon)")
+            INFO("Using Apple MPS")
             return "mps"
-        logger.warning("No GPU found! Using CPU (slow)")
+        WARN("No GPU - using CPU")
         return "cpu"
     
     def _load_model(self):
-        logger.info("Loading YOLOv8n for cell detection...")
+        INFO("Loading YOLOv8...")
         
         try:
             from ultralytics import YOLO
         except ImportError:
-            logger.error("Ultralytics not installed!")
-            logger.error("Install with: pip install ultralytics")
-            logger.error("Detection will NOT work!")
+            ERROR("Ultralytics not installed! Install: pip install ultralytics")
+            self._load_fallback()
             return
         
         model_path = Path("models/yolov8n.pt")
         
         try:
             if model_path.exists():
-                logger.info(f"Loading YOLO from {model_path}")
                 self.model = YOLO(str(model_path))
             else:
-                logger.info("Downloading YOLOv8n model...")
+                INFO("Downloading YOLOv8n...")
                 self.model = YOLO("yolov8n.pt")
-                logger.info("YOLOv8n downloaded")
             
             self.model.to(self.device)
             self.use_yolo = True
-            logger.info("YOLOv8n loaded successfully!")
-            
+            INFO("YOLOv8 loaded!")
         except Exception as e:
-            logger.error(f"Failed to load YOLO: {e}")
-            logger.error("Detection will use fallback (less accurate)")
+            ERROR(f"YOLO load failed: {e}")
             self._load_fallback()
     
     def _load_fallback(self):
-        """OpenCV-based fallback detector"""
-        logger.warning("Using OpenCV fallback detector (less accurate)")
+        WARN("Using OpenCV fallback")
         self.use_yolo = False
     
     def detect(self, image: np.ndarray) -> List[Dict]:
-        """Detect all blood cells in image"""
-        
-        if not self.use_yolo or self.model is None:
-            logger.info("Using OpenCV fallback detection")
-            return self._opencv_detect(image)
-        
-        logger.info(f"Running YOLO detection on {image.shape[:2]} image...")
+        INFO(f"Detecting cells in {image.shape[:2]}...")
         t0 = time.time()
         
-        try:
-            results = self.model(
-                image,
-                conf=self.config.confidence_threshold,
-                device=self.device,
-                verbose=False,
-                imgsz=640
-            )
-            
-            detections = []
-            for r in results:
-                boxes = r.boxes
-                for box in boxes:
-                    detections.append({
-                        'bbox': box.xyxy[0].cpu().numpy().tolist(),
-                        'confidence': float(box.conf[0]),
-                        'class': int(box.cls[0])
-                    })
-            
-            logger.info(f"YOLO found {len(detections)} cells in {time.time()-t0:.2f}s")
-            return detections
-            
-        except Exception as e:
-            logger.error(f"YOLO detection failed: {e}")
-            logger.info("Falling back to OpenCV...")
-            return self._opencv_detect(image)
+        if self.use_yolo and self.model:
+            try:
+                results = self.model(
+                    image,
+                    conf=self.config.confidence_threshold,
+                    device=self.device,
+                    verbose=False,
+                    imgsz=640
+                )
+                
+                detections = []
+                for r in results:
+                    for box in r.boxes:
+                        detections.append({
+                            'bbox': box.xyxy[0].cpu().numpy().tolist(),
+                            'confidence': float(box.conf[0]),
+                            'class': int(box.cls[0])
+                        })
+                
+                INFO(f"YOLO found {len(detections)} cells in {time.time()-t0:.2f}s")
+                return detections
+            except Exception as e:
+                ERROR(f"YOLO failed: {e}")
+        
+        return self._opencv_detect(image)
     
     def _opencv_detect(self, image: np.ndarray) -> List[Dict]:
-        """OpenCV-based blood cell detection"""
-        logger.info("Running OpenCV detection...")
+        INFO("Using OpenCV detection...")
         
         gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
         blur = cv2.GaussianBlur(gray, (5, 5), 0)
@@ -316,7 +349,7 @@ class YOLOv8Detector:
         detections = []
         for cnt in contours[:self.config.max_cells_analysis]:
             area = cv2.contourArea(cnt)
-            if 200 < area < 8000:  # Valid RBC size range
+            if 200 < area < 8000:
                 x, y, w, h = cv2.boundingRect(cnt)
                 detections.append({
                     'bbox': [x, y, x+w, y+h],
@@ -324,34 +357,33 @@ class YOLOv8Detector:
                     'class': 0
                 })
         
-        logger.info(f"OpenCV found {len(detections)} cells")
+        INFO(f"OpenCV found {len(detections)} cells")
         return detections
 
 
 class OptimizedPipeline:
     """
-    GPU-OPTIMIZED pipeline for LokiVision
-    Requires trained models!
+    GPU-OPTIMIZED pipeline with Elliptocytosis detection
     """
     
     def __init__(self, config: Optional[InferenceConfig] = None):
         self.config = config or InferenceConfig()
         self.device = self._get_device()
         
-        logger.info("="*60)
-        logger.info("LOKIVISION PIPELINE INITIALIZATION")
-        logger.info("="*60)
+        INFO("="*60)
+        INFO("LOKIVISION PIPELINE INITIALIZATION")
+        INFO("="*60)
         
         # Load detector
-        logger.info("[1/3] Loading YOLOv8 detector...")
+        INFO("[1/3] Loading YOLOv8 detector...")
         self.detector = YOLOv8Detector(self.config)
         
         # Load classifier
-        logger.info("[2/3] Loading disease classifier...")
+        INFO("[2/3] Loading disease classifier...")
         self.classifier = self._load_classifier()
         
-        # Image transforms
-        logger.info("[3/3] Setting up transforms...")
+        # Transforms
+        INFO("[3/3] Setting up transforms...")
         self.transform = transforms.Compose([
             transforms.ToPILImage(),
             transforms.Resize((self.config.img_size, self.config.img_size)),
@@ -359,12 +391,9 @@ class OptimizedPipeline:
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         ])
         
-        logger.info("="*60)
-        logger.info("Pipeline ready!")
-        logger.info(f"Device: {self.device}")
-        logger.info(f"Batch size: {self.config.batch_size}")
-        logger.info(f"Image size: {self.config.img_size}")
-        logger.info("="*60)
+        INFO("="*60)
+        INFO(f"Pipeline ready! Device: {self.device}")
+        INFO("="*60)
     
     def _get_device(self):
         if torch.cuda.is_available():
@@ -373,174 +402,120 @@ class OptimizedPipeline:
             return "mps"
         return "cpu"
     
-    def _load_classifier(self) -> MultiDiseaseClassifier:
-        """Load the multi-disease classifier"""
-        
-        # Try to load trained model
+    def _load_classifier(self):
         model_paths = [
             "models/multi_disease_classifier.pt",
             "models/malaria_classifier.pt",
-            "models/sickle_classifier.pt", 
-            "models/thal_classifier.pt"
+            "models/sickle_classifier.pt",
+            "models/elliptocytosis_classifier.pt"
         ]
         
         for path in model_paths:
             if Path(path).exists():
-                logger.info(f"Found trained model: {path}")
+                INFO(f"Found: {path}")
                 try:
-                    model = MultiDiseaseClassifier(model_path=path)
-                    logger.info("Trained model loaded!")
-                    return model
+                    return MultiDiseaseClassifier(model_path=path)
                 except Exception as e:
-                    logger.error(f"Failed to load {path}: {e}")
+                    ERROR(f"Load error: {e}")
         
-        # No trained model found
-        logger.error("="*60)
-        logger.error("NO TRAINED MODEL FOUND!")
-        logger.error("="*60)
-        logger.error("")
-        logger.error("Please train the models first:")
-        logger.error("  1. Put your dataset in data/<disease>/")
-        logger.error("  2. Run: python training/train.py --disease malaria --data data/malaria")
-        logger.error("="*60)
-        
-        # Return untrained model (will give untrained results)
+        ERROR("NO TRAINED MODEL - using untrained")
         return MultiDiseaseClassifier()
     
     def run(self, image: np.ndarray) -> Dict:
-        """
-        Run full blood smear analysis
-        Returns detailed results with progress messages
-        """
+        """Run analysis with Elliptocytosis detection"""
         
-        logger.info("="*60)
-        logger.info("STARTING BLOOD SMEAR ANALYSIS")
-        logger.info("="*60)
+        INFO("="*60)
+        INFO("STARTING ANALYSIS")
+        INFO("="*60)
         
         t_total = time.time()
         
-        # Step 1: Detection
-        logger.info("[STEP 1/4] Detecting blood cells...")
+        # Step 1: Detect
+        INFO("[1/4] Detecting cells...")
         t1 = time.time()
         detections = self.detector.detect(image)
         t_detect = time.time() - t1
         
         if len(detections) < 10:
-            logger.error(f"Too few cells detected: {len(detections)}")
-            return {
-                'job_id': 'inference',
-                'status': 'failed',
-                'error': f'Only {len(detections)} cells detected. Need at least 10.',
-                'suggestion': 'Try a clearer/better quality image'
-            }
+            ERROR(f"Too few cells: {len(detections)}")
+            return {'status': 'failed', 'error': f'Only {len(detections)} cells'}
         
-        logger.info(f"  -> Found {len(detections)} cells in {t_detect:.2f}s")
+        INFO(f"  Found {len(detections)} cells in {t_detect:.2f}s")
         
-        # Step 2: Crop cells
-        logger.info("[STEP 2/4] Cropping cells...")
+        # Step 2: Crop
+        INFO("[2/4] Cropping cells...")
         t2 = time.time()
         cell_tensors = []
         
-        for i, cell in enumerate(detections[:self.config.max_cells_analysis]):
-            bbox = cell['bbox']
-            x1, y1, x2, y2 = map(int, bbox)
+        for cell in detections[:self.config.max_cells_analysis]:
+            x1, y1, x2, y2 = map(int, cell['bbox'])
             
             pad = 5
-            x1 = max(0, x1 - pad)
-            y1 = max(0, y1 - pad)
-            x2 = min(image.shape[1], x2 + pad)
-            y2 = min(image.shape[0], y2 + pad)
+            x1, y1 = max(0, x1-pad), max(0, y1-pad)
+            x2, y2 = min(image.shape[1], x2+pad), min(image.shape[0], y2+pad)
             
             crop = image[y1:y2, x1:x2]
             if crop.size > 0:
-                tensor = self.transform(crop)
-                cell_tensors.append(tensor)
+                cell_tensors.append(self.transform(crop))
         
         crop_count = len(cell_tensors)
         t_crop = time.time() - t2
-        logger.info(f"  -> Cropped {crop_count} cells in {t_crop:.2f}s")
+        INFO(f"  Cropped {crop_count} cells in {t_crop:.2f}s")
         
         if not cell_tensors:
-            logger.error("No valid cells to classify")
-            return {'status': 'failed', 'error': 'No valid cells found'}
+            return {'status': 'failed', 'error': 'No valid cells'}
         
-        # Step 3: GPU Batch Classification
-        logger.info(f"[STEP 3/4] Classifying {crop_count} cells on {self.device}...")
+        # Step 3: Classify with GPU batch
+        INFO(f"[3/4] Classifying {crop_count} cells on {self.device}...")
         t3 = time.time()
         
-        try:
-            # Batch processing on GPU
-            batch = torch.stack(cell_tensors).to(self.device)
-            batch_size = batch.size(0)
-            logger.info(f"  -> Batch shape: {batch.shape}")
-            
-            with torch.no_grad():
-                mal_logits, sick_logits, thal_logits = self.classifier(batch)
-                
-                # Get predictions
-                mal_preds = torch.argmax(mal_logits, dim=1)
-                mal_probs = F.softmax(mal_logits, dim=1).max(dim=1)[0]
-                
-                sick_preds = torch.argmax(sick_logits, dim=1)
-                sick_probs = F.softmax(sick_logits, dim=1).max(dim=1)[0]
-                
-                thal_preds = torch.argmax(thal_logits, dim=1)
-                thal_probs = F.softmax(thal_logits, dim=1).max(dim=1)[0]
-            
-            t_class = time.time() - t3
-            logger.info(f"  -> Classification done in {t_class:.2f}s")
-            
-        except Exception as e:
-            logger.error(f"Classification failed: {e}")
-            return {
-                'status': 'failed',
-                'error': f'Classification error: {e}'
-            }
+        batch = torch.stack(cell_tensors).to(self.device)
+        DEBUG(f"  Batch: {batch.shape}")
         
-        # Step 4: Aggregate results
-        logger.info("[STEP 4/4] Aggregating results...")
+        with torch.no_grad():
+            mal_logits, sick_logits, ellipt_logits = self.classifier(batch)
+            
+            mal_preds = torch.argmax(mal_logits, dim=1)
+            mal_probs = F.softmax(mal_logits, dim=1).max(dim=1)[0]
+            
+            sick_preds = torch.argmax(sick_logits, dim=1)
+            sick_probs = F.softmax(sick_logits, dim=1).max(dim=1)[0]
+            
+            ellipt_preds = torch.argmax(ellipt_logits, dim=1)
+            ellipt_probs = F.softmax(ellipt_logits, dim=1).max(dim=1)[0]
+        
+        t_class = time.time() - t3
+        INFO(f"  Classification in {t_class:.2f}s")
+        
+        # Step 4: Aggregate
+        INFO("[4/4] Aggregating results...")
         
         cell_count = len(cell_tensors)
         
-        # Count predictions
-        mal_pos = int((mal_preds == 0).sum())
-        sick_pos = int((sick_preds == 1).sum())
-        thal_pos = int((thal_preds != 0).sum())
+        mal_pos = int((mal_preds == 0).sum())  # parasitized
+        sick_pos = int((sick_preds == 1).sum())  # sickle
+        ellipt_pos = int((ellipt_preds != 0).sum())  # abnormal elliptocytes
         
         mal_rate = mal_pos / cell_count
         sick_rate = sick_pos / cell_count
-        thal_rate = thal_pos / cell_count
+        ellipt_rate = ellipt_pos / cell_count
         
-        # Determine severity
         mal_severity = "severe" if mal_rate > 0.05 else "moderate" if mal_rate > 0.01 else "low"
-        
-        # Calculate confidences
-        mal_conf = float(mal_probs.mean())
-        sick_conf = float(sick_probs.mean())
-        thal_conf = float(thal_probs.mean())
         
         t_total = time.time() - t_total
         
-        logger.info("="*60)
-        logger.info("ANALYSIS COMPLETE!")
-        logger.info(f"Total time: {t_total:.2f}s")
-        logger.info(f"Cells analyzed: {cell_count}")
-        logger.info("-" * 30)
-        logger.info(f"Malaria: {'POSITIVE' if mal_pos > 0 else 'NEGATIVE'} ({mal_pos}/{cell_count} = {mal_rate*100:.1f}%)")
-        logger.info(f"Sickle: {'POSITIVE' if sick_pos > 0 else 'NEGATIVE'} ({sick_pos}/{cell_count} = {sick_rate*100:.1f}%)")
-        logger.info(f"Thalassemia: {'POSITIVE' if thal_pos > 0 else 'NEGATIVE'} ({thal_pos}/{cell_count} = {thal_rate*100:.1f}%)")
-        logger.info("="*60)
+        INFO("="*60)
+        INFO("ANALYSIS COMPLETE!")
+        INFO(f"Total: {t_total:.2f}s | Cells: {cell_count}")
+        INFO(f"Malaria: {'+' if mal_pos > 0 else '-'} ({mal_pos}, {mal_rate*100:.1f}%)")
+        INFO(f"Sickle: {'+' if sick_pos > 0 else '-'} ({sick_pos}, {sick_rate*100:.1f}%)")
+        INFO(f"Elliptocytosis: {'+' if ellipt_pos > 0 else '-'} ({ellipt_pos}, {ellipt_rate*100:.1f}%)")
+        INFO("="*60)
         
         return {
-            'job_id': 'inference',
             'status': 'completed',
             'device': self.device,
-            'timing': {
-                'detection_s': round(t_detect, 2),
-                'crop_s': round(t_crop, 2),
-                'classification_s': round(t_class, 2),
-                'total_s': round(t_total, 2)
-            },
+            'timing': {'detection': t_detect, 'crop': t_crop, 'classify': t_class, 'total': t_total},
             'cell_statistics': {
                 'total_detected': len(detections),
                 'rbc_count': cell_count,
@@ -551,50 +526,35 @@ class OptimizedPipeline:
             'results': {
                 'malaria': {
                     'diagnosis': 'Positive' if mal_pos > 0 else 'Negative',
-                    'confidence': round(mal_conf, 3),
+                    'confidence': round(float(mal_probs.mean()), 3),
                     'positive_rate': round(mal_rate, 3),
                     'positive_count': mal_pos,
                     'severity': mal_severity,
-                    'cell_distribution': {
-                        'parasitized': mal_pos,
-                        'uninfected': cell_count - mal_pos
-                    },
-                    'model_version': 'efficientnet-b0-malaria-v1.0'
+                    'cell_distribution': {'parasitized': mal_pos, 'uninfected': cell_count - mal_pos}
                 },
                 'sickle_cell': {
                     'diagnosis': 'Positive' if sick_pos > 0 else 'Negative',
-                    'confidence': round(sick_conf, 3),
+                    'confidence': round(float(sick_probs.mean()), 3),
                     'positive_rate': round(sick_rate, 3),
                     'positive_count': sick_pos,
-                    'cell_distribution': {
-                        'normal': cell_count - sick_pos,
-                        'sickle': sick_pos,
-                        'target': 0,
-                        'other': 0
-                    },
-                    'model_version': 'mobilenetv3-sickle-v1.0'
+                    'cell_distribution': {'normal': cell_count-sick_pos, 'sickle': sick_pos, 'target': 0, 'other': 0}
                 },
-                'thalassemia': {
-                    'diagnosis': 'Positive' if thal_pos > 0 else 'Negative',
-                    'confidence': round(thal_conf, 3),
-                    'positive_rate': round(thal_rate, 3),
-                    'positive_count': thal_pos,
+                'elliptocytosis': {  # CHANGED FROM THALASSEMIA
+                    'diagnosis': 'Positive' if ellipt_pos > 0 else 'Negative',
+                    'confidence': round(float(ellipt_probs.mean()), 3),
+                    'positive_rate': round(ellipt_rate, 3),
+                    'positive_count': ellipt_pos,
                     'cell_distribution': {
-                        'normal': cell_count - thal_pos,
-                        'hypochromic': thal_pos,
-                        'target': 0,
-                        'pencil': 0,
-                        'micro': 0
-                    },
-                    'model_version': 'efficientnet-b2-thal-v1.0'
+                        'normal': cell_count - ellipt_pos,
+                        'elliptocyte': int((ellipt_preds == 1).sum()),
+                        'oval': int((ellipt_preds == 2).sum()),
+                        'pencil_cigar': int((ellipt_preds == 3).sum())
+                    }
                 }
             },
             'quality_flags': [],
-            'disclaimer': 'AI-assisted screening only. Not for clinical diagnosis.',
-            'model_versions': {
-                'segmentor': 'yolov8n',
-                'classifier': 'multi-disease-cnn-v1.0'
-            }
+            'disclaimer': 'AI-assisted only. Not for clinical diagnosis.',
+            'model_versions': {'segmentor': 'yolov8n', 'classifier': 'multi-disease-v2'}
         }
 
 

@@ -59,6 +59,10 @@ export default function AnalysisResult() {
     }
   }
 
+  // Debug info
+  console.log('[DEBUG] Analysis result:', result)
+  console.log('[DEBUG] Diseases:', result?.results)
+
   return (
     <div className="min-h-screen bg-slate-50">
       {/* Header */}
@@ -107,10 +111,10 @@ export default function AnalysisResult() {
 
         {/* Disease Results */}
         <div className="grid md:grid-cols-3 gap-6 mb-8">
-          {['malaria', 'sickle_cell', 'thalassemia'].map((disease, i) => {
+          {['malaria', 'sickle_cell', 'elliptocytosis'].map((disease, i) => {
             const status = getDiseaseStatus(disease)
             const res = result.results?.[disease]
-            const diseaseName = disease === 'malaria' ? 'Malaria' : disease === 'sickle_cell' ? 'Sickle Cell' : 'Thalassemia'
+            const diseaseName = disease === 'malaria' ? 'Malaria' : disease === 'sickle_cell' ? 'Sickle Cell' : 'Elliptocytosis'
             const iconColor = status.color === 'red' ? 'text-red-600' : status.color === 'orange' ? 'text-orange-600' : status.color === 'amber' ? 'text-amber-600' : 'text-green-600'
 
             return (
