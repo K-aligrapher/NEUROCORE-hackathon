@@ -43,7 +43,7 @@ export default function NewAnalysis() {
     try {
       const result = await analysisApi.upload(file, patientId || undefined, notes || undefined)
       setSelectedJobId(result.job_id)
-      navigate(`/analysis/${result.job_id}/processing`)
+      navigate(`/analysis/${result.job_id}`)
     } catch (err: any) {
       setError(err.response?.data?.detail || 'Upload failed. Please try again.')
     } finally {
